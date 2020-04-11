@@ -2377,16 +2377,8 @@ class AnsibleModule(object):
         if PY2 and sys.platform != 'win32':
             signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    def run_command(self, args, check_rc=False, close_fds=True, executable=None, data=None, binary_data=False, path_prefix=None, cwd=None,
-                    use_unsafe_shell=False, prompt_regex=None, environ_update=None, umask=None, encoding='utf-8', errors='surrogate_or_strict',
-                    expand_user_and_vars=True, pass_fds=None, before_communicate_callback=None):
+    def get_commandspecs(self, updated_commandspecs={}):
         '''
-        Execute a command, returns rc, stdout, and stderr.
-
-        :arg args: is the command to run
-            * If args is a list, the command will be run with shell=False.
-            * If args is a string and use_unsafe_shell=False it will split args to a list and run with shell=False
-            * If args is a string and use_unsafe_shell=True it runs with shell=True.
         :kw check_rc: Whether to call fail_json in case of non zero RC.
             Default False
         :kw close_fds: See documentation for subprocess.Popen(). Default True
@@ -2430,12 +2422,37 @@ class AnsibleModule(object):
             after ``Popen`` object will be created
             but before communicating to the process.
             (``Popen`` object will be passed to callback as a first argument)
+        '''
+        # Assign default specs
+        commandspecs = dict(
+            check_rc=False, close_fds=True, executable=None, data=None, binary_data=False, path_prefix=None, cwd=None,
+            use_unsafe_shell=False, prompt_regex=None, environ_update=None, umask=None, encoding='utf-8', errors='surrogate_or_strict',
+            expand_user_and_vars=True, pass_fds=None, before_communicate_callback=None
+        )
+
+        # Make any updates
+        for spec in updated_commandspecs:
+            commandspecs[spec] = updated_commandspecs[spec]
+
+        return commandspecs
+
+    def run_command(self, args, commandspecs={}):
+        '''
+        Execute a command, returns rc, stdout, and stderr.
+
+        :arg args: is the command to run
+            * If args is a list, the command will be run with shell=False.
+            * If args is a string and use_unsafe_shell=False from commandspecs, it will split args to a list and run with shell=False
+            * If args is a string and use_unsafe_shell=True from commandspecs, it runs with shell=True.
         :returns: A 3-tuple of return code (integer), stdout (native string),
             and stderr (native string).  On python2, stdout and stderr are both
             byte strings.  On python3, stdout and stderr are text strings converted
             according to the encoding and errors parameters.  If you want byte
             strings on python3, use encoding=None to turn decoding to text off.
         '''
+
+        commandspecs = self.get_commandspecs(commandspecs)
+
         # used by clean args later on
         self._clean = None
 
@@ -2444,20 +2461,20 @@ class AnsibleModule(object):
             self.fail_json(rc=257, cmd=args, msg=msg)
 
         shell = False
-        if use_unsafe_shell:
+        if commandspecs['use_unsafe_shell']:
 
             # stringify args for unsafe/direct shell usage
             if isinstance(args, list):
-                args = b" ".join([to_bytes(shlex_quote(x), errors='surrogate_or_strict') for x in args])
+                args = b" ".join([to_bytes(shlex_quote(x), commandspecs['errors']='surrogate_or_strict') for x in args])
             else:
-                args = to_bytes(args, errors='surrogate_or_strict')
+                args = to_bytes(args, commandspecs['errors']='surrogate_or_strict')
 
             # not set explicitly, check if set by controller
-            if executable:
-                executable = to_bytes(executable, errors='surrogate_or_strict')
-                args = [executable, b'-c', args]
+            if commandspecs['executable']:
+                commandspecs['executable'] = to_bytes(commandspecs['executable'], commandspecs['errors']='surrogate_or_strict')
+                args = [commandspecs['executable'], b'-c', args]
             elif self._shell not in (None, '/bin/sh'):
-                args = [to_bytes(self._shell, errors='surrogate_or_strict'), b'-c', args]
+                args = [to_bytes(self._shell, commandspecs['errors']='surrogate_or_strict'), b'-c', args]
             else:
                 shell = True
         else:
@@ -2466,26 +2483,26 @@ class AnsibleModule(object):
                 # On python2.6 and below, shlex has problems with text type
                 # On python3, shlex needs a text type.
                 if PY2:
-                    args = to_bytes(args, errors='surrogate_or_strict')
+                    args = to_bytes(args, commandspecs['errors']='surrogate_or_strict')
                 elif PY3:
-                    args = to_text(args, errors='surrogateescape')
+                    args = to_text(args, commandspecs['errors']='surrogateescape')
                 args = shlex.split(args)
 
             # expand ``~`` in paths, and all environment vars
-            if expand_user_and_vars:
-                args = [to_bytes(os.path.expanduser(os.path.expandvars(x)), errors='surrogate_or_strict') for x in args if x is not None]
+            if commandspecs['expand_user_and_vars']:
+                args = [to_bytes(os.path.expanduser(os.path.expandvars(x)), commandspecs['errors']='surrogate_or_strict') for x in args if x is not None]
             else:
-                args = [to_bytes(x, errors='surrogate_or_strict') for x in args if x is not None]
+                args = [to_bytes(x, commandspecs['errors']='surrogate_or_strict') for x in args if x is not None]
 
         prompt_re = None
-        if prompt_regex:
+        if commandspecs['prompt_regex']:
             if isinstance(prompt_regex, text_type):
                 if PY3:
-                    prompt_regex = to_bytes(prompt_regex, errors='surrogateescape')
+                    commandspecs['prompt_regex'] = to_bytes(commandspecs['prompt_regex'], commandspecs['errors']='surrogateescape')
                 elif PY2:
-                    prompt_regex = to_bytes(prompt_regex, errors='surrogate_or_strict')
+                    commandspecs['prompt_regex'] = to_bytes(commandspecs['prompt_regex'], commandspecs['errors']='surrogate_or_strict')
             try:
-                prompt_re = re.compile(prompt_regex, re.MULTILINE)
+                prompt_re = re.compile(commandspecs['prompt_regex'], re.MULTILINE)
             except re.error:
                 self.fail_json(msg="invalid prompt regular expression given to run_command")
 
@@ -2499,13 +2516,13 @@ class AnsibleModule(object):
         for key, val in self.run_command_environ_update.items():
             old_env_vals[key] = os.environ.get(key, None)
             os.environ[key] = val
-        if environ_update:
-            for key, val in environ_update.items():
+        if commandspecs['environ_update']:
+            for key, val in commandspecs['environ_update'].items():
                 old_env_vals[key] = os.environ.get(key, None)
                 os.environ[key] = val
-        if path_prefix:
+        if commandspecs['path_prefix']:
             old_env_vals['PATH'] = os.environ['PATH']
-            os.environ['PATH'] = "%s:%s" % (path_prefix, os.environ['PATH'])
+            os.environ['PATH'] = "%s:%s" % (commandspecs['path_prefix'], os.environ['PATH'])
 
         # If using test-module.py and explode, the remote lib path will resemble:
         #   /tmp/test_module_scratch/debug_dir/ansible/module_utils/basic.py
@@ -2522,45 +2539,45 @@ class AnsibleModule(object):
             if not os.environ['PYTHONPATH']:
                 del os.environ['PYTHONPATH']
 
-        if data:
+        if commandspecs['data']:
             st_in = subprocess.PIPE
 
         kwargs = dict(
-            executable=executable,
+            executable=commandspecs['executable'],
             shell=shell,
-            close_fds=close_fds,
+            close_fds=commandspecs['close_fds'],
             stdin=st_in,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             preexec_fn=self._restore_signal_handlers,
         )
-        if PY3 and pass_fds:
-            kwargs["pass_fds"] = pass_fds
-        elif PY2 and pass_fds:
+        if PY3 and commandspecs['pass_fds']:
+            kwargs["pass_fds"] = commandspecs['pass_fds']
+        elif PY2 and commandspecs['pass_fds']:
             kwargs['close_fds'] = False
 
         # store the pwd
         prev_dir = os.getcwd()
 
         # make sure we're in the right working directory
-        if cwd and os.path.isdir(cwd):
-            cwd = to_bytes(os.path.abspath(os.path.expanduser(cwd)), errors='surrogate_or_strict')
-            kwargs['cwd'] = cwd
+        if commandspecs['cwd'] and os.path.isdir(commandspecs['cwd']):
+            commandspecs['cwd'] = to_bytes(os.path.abspath(os.path.expanduser(commandspecs['cwd'])), commandspecs['errors']='surrogate_or_strict')
+            kwargs['cwd'] = commandspecs['cwd']
             try:
-                os.chdir(cwd)
+                os.chdir(commandspecs['cwd'])
             except (OSError, IOError) as e:
-                self.fail_json(rc=e.errno, msg="Could not open %s, %s" % (cwd, to_native(e)),
+                self.fail_json(rc=e.errno, msg="Could not open %s, %s" % (commandspecs['cwd'], to_native(e)),
                                exception=traceback.format_exc())
 
         old_umask = None
-        if umask:
-            old_umask = os.umask(umask)
+        if commandspecs['umask']:
+            old_umask = os.umask(commandspecs['umask'])
 
         try:
             if self._debug:
                 self.log('Executing: ' + self._clean_args(args))
             cmd = subprocess.Popen(args, **kwargs)
-            if before_communicate_callback:
+            if commandspecs['before_communicate_callback']:
                 before_communicate_callback(cmd)
 
             # the communication logic here is essentially taken from that
@@ -2570,12 +2587,12 @@ class AnsibleModule(object):
             stderr = b('')
             rpipes = [cmd.stdout, cmd.stderr]
 
-            if data:
-                if not binary_data:
-                    data += '\n'
-                if isinstance(data, text_type):
-                    data = to_bytes(data)
-                cmd.stdin.write(data)
+            if commandspecs['data']:
+                if not commandspecs['binary_data']:
+                    commandspecs['data'] += '\n'
+                if isinstance(commandspecs['data'], text_type):
+                    commandspecs['data'] = to_bytes(commandspecs['data'])
+                cmd.stdin.write(commandspecs['data'])
                 cmd.stdin.close()
 
             while True:
@@ -2584,9 +2601,9 @@ class AnsibleModule(object):
                 stderr += self._read_from_pipes(rpipes, rfds, cmd.stderr)
                 # if we're checking for prompts, do it now
                 if prompt_re:
-                    if prompt_re.search(stdout) and not data:
-                        if encoding:
-                            stdout = to_native(stdout, encoding=encoding, errors=errors)
+                    if prompt_re.search(stdout) and not commandspecs['data']:
+                        if commandspecs['encoding']:
+                            stdout = to_native(stdout, encoding=commandspecs['encoding'], errors=commandspecs['errors'])
                         return (257, stdout, "A prompt was encountered while running a command, but no input data was specified")
                 # only break out if no pipes are left to read or
                 # the pipes are completely read and
@@ -2623,16 +2640,16 @@ class AnsibleModule(object):
         if old_umask:
             os.umask(old_umask)
 
-        if rc != 0 and check_rc:
+        if rc != 0 and commandspecs['check_rc']:
             msg = heuristic_log_sanitize(stderr.rstrip(), self.no_log_values)
             self.fail_json(cmd=self._clean_args(args), rc=rc, stdout=stdout, stderr=stderr, msg=msg)
 
         # reset the pwd
         os.chdir(prev_dir)
 
-        if encoding is not None:
-            return (rc, to_native(stdout, encoding=encoding, errors=errors),
-                    to_native(stderr, encoding=encoding, errors=errors))
+        if commandspecs['encoding'] is not None:
+            return (rc, to_native(stdout, encoding=commandspecs['encoding'], errors=commandspecs['errors']),
+                    to_native(stderr, encoding=commandspecs['encoding'], errors=commandspecs['errors']))
 
         return (rc, stdout, stderr)
 
